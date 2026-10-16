@@ -1,7 +1,7 @@
 # Project: Arctos OS ArcAI Architecture Overhaul
 
 ## Architecture Overview
-Arctos OS bare-metal Rust microkernel with native ArcAI integration, intent-driven fluid UI, zero-lag native component wiring engine, persistent memory, intermittent user checkups, and dynamic resource creation.
+Arctos OS bare-metal Rust kernel with native ArcAI integration, intent-driven fluid UI, zero-lag native component wiring engine, persistent memory, intermittent user checkups, and dynamic resource creation.
 
 ## Code Layout
 - `src/main.rs`: Kernel entry point, system bootstrap, AIVFS mount, profile auto-load.
