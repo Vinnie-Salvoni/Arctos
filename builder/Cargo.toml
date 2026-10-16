@@ -1,0 +1,8 @@
+[package]
+name = "arctos_builder"
+version = "0.1.0"
+edition = "2021"
+authors = ["Arctos Contributors"]
+
+[dependencies]
+# Zero dependencies! We will write self-contained ELF and AIVFS code for maximum reliability and simplicity!

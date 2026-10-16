@@ -1,0 +1,44 @@
+[package]
+name = "arctos_os"
+version = "0.1.11"
+edition = "2021"
+authors = ["Vincenzo Salvoni <vinniesalvoni@gmail.com>"]
+license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
+description = "A bare-metal x86_64 operating system with native AI integration"
+
+[package.metadata.bootimage]
+run-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-drive", "file=target/model_disk.bin,format=raw,index=2,media=disk", "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on", "-rtc", "clock=host"]
+test-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-drive", "file=target/model_disk.bin,format=raw,index=2,media=disk", "-rtc", "clock=host"]
+
+
+[dependencies]
+volatile = "0.2.7"
+spin = "0.5.2"
+x86_64 = { version = "0.14.10", default-features = false, features = ["instructions", "inline_asm", "abi_x86_interrupt"] }
+pic8259 = "0.10.4"
+pc-keyboard = "0.7.0"
+linked_list_allocator = "0.9.0"
+
+# Enables map_physical_memory so the bootloader maps all physical RAM into
+# virtual address space and exposes physical_memory_offset inside BootInfo.
+[dependencies.bootloader]
+version = "0.9.27"
+features = ["map_physical_memory"]
+
+[dependencies.lazy_static]
+version = "1.5.0"
+features = ["spin_no_std"]
+
+[profile.dev]
+opt-level = 3
+overflow-checks = false
+debug-assertions = false
+
+[workspace]
+members = [
+    "builder",
+    "sdk",
+    "crates/arcai_runtime",
+    "crates/trainer",
+]
+

@@ -1,0 +1,3 @@
+@echo off
+echo [Arctos] Running Real AI Trainer on host Windows target...
+cargo run --package trainer --target x86_64-pc-windows-msvc -Z build-std=

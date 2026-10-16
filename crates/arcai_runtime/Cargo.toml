@@ -1,0 +1,8 @@
+[package]
+name = "arcai_runtime"
+version = "0.1.0"
+edition = "2021"
+description = "ArcAI Standard Runtime Engine & Hardware Driver Subsystem (std)"
+
+[dependencies]
+# Standard Library dependencies for high-performance host runtime & Intel hardware orchestration

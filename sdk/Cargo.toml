@@ -1,0 +1,8 @@
+[package]
+name = "arctos_sdk"
+version = "0.1.0"
+authors = ["Arctos Contributors"]
+edition = "2021"
+
+[dependencies]
+# Pure no_std with zero dependencies!
