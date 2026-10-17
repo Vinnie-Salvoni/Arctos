@@ -1,6 +1,5 @@
 use x86_64::instructions::port::Port;
 
-// We use 16-bit ports for data transfer, and 8-bit ports for commands/status.
 const DATA_PORT: u16 = 0x1F0;
 const SECTOR_COUNT_PORT: u16 = 0x1F2;
 const LBA_LO_PORT: u16 = 0x1F3;
@@ -8,146 +7,121 @@ const LBA_MID_PORT: u16 = 0x1F4;
 const LBA_HI_PORT: u16 = 0x1F5;
 const DRIVE_HEAD_PORT: u16 = 0x1F6;
 const STATUS_COMMAND_PORT: u16 = 0x1F7;
+const ALT_STATUS_PORT: u16 = 0x3F6; // read = alternate status, write = device control
 
-// Status register flags (Port 0x1F7)
-const STATUS_BSY: u8 = 0x80; // Busy bit: Controller is executing a command
-const STATUS_DRQ: u8 = 0x08; // Data Request bit: Controller is ready to send/receive data
-const STATUS_ERR: u8 = 0x01; // Error bit: An error occurred
+const STATUS_BSY: u8 = 0x80;
+const STATUS_DF: u8 = 0x20; // device fault
+const STATUS_DRQ: u8 = 0x08;
+const STATUS_ERR: u8 = 0x01;
 
-// ATA Drive Selection Flags:
-// 0xE0: LBA mode + Master drive (Drive 0 - Boot image)
-// 0xF0: LBA mode + Slave drive (Drive 1 - Secondary data storage)
 #[allow(dead_code)]
 const DRIVE_MASTER: u8 = 0xE0;
 const DRIVE_SLAVE: u8 = 0xF0;
 const ACTIVE_DRIVE: u8 = DRIVE_SLAVE;
 
-/// Polls the disk status register until the drive is ready to transfer data.
-/// Includes a safety timeout to prevent permanent hangs.
-fn wait_ready() -> Result<(), ()> {
+const POLL_LIMIT: u32 = 1_000_000;
+
+/// ATA needs ~400 ns after a drive select; four alt-status reads is the standard delay.
+fn io_delay() {
+    let mut alt = Port::<u8>::new(ALT_STATUS_PORT);
+    for _ in 0..4 {
+        unsafe { alt.read(); }
+    }
+}
+
+/// Waits until the drive is not busy. Err on error, fault or timeout.
+fn wait_not_busy() -> Result<(), ()> {
     let mut status_port = Port::<u8>::new(STATUS_COMMAND_PORT);
-    let mut timeout = 0;
-    
-    loop {
+    for _ in 0..POLL_LIMIT {
         let status = unsafe { status_port.read() };
-        
-        // If the Busy flag (BSY) is clear, check status bits
-        if (status & STATUS_BSY) == 0 {
-            // Once BSY is clear, check if the Data Request (DRQ) is set.
-            if (status & STATUS_DRQ) != 0 {
-                return Ok(());
-            }
-            // If there's an error status, fail immediately.
-            if (status & STATUS_ERR) != 0 {
+        if status & STATUS_BSY == 0 {
+            if status & (STATUS_ERR | STATUS_DF) != 0 {
                 return Err(());
             }
-        }
-
-        timeout += 1;
-        if timeout > 100_000 {
-            return Err(()); // Timeout failure
+            return Ok(());
         }
     }
+    Err(())
 }
 
-/// Reads `sectors` number of sectors starting from LBA `lba_addr` into the buffer.
-/// The buffer must be sized to hold the requested sectors (512 bytes, i.e., 256 `u16` words per sector).
+/// Waits until the drive is ready to transfer a sector (DRQ). Err on error, fault or timeout.
+fn wait_ready() -> Result<(), ()> {
+    let mut status_port = Port::<u8>::new(STATUS_COMMAND_PORT);
+    for _ in 0..POLL_LIMIT {
+        let status = unsafe { status_port.read() };
+        if status & STATUS_BSY == 0 {
+            if status & (STATUS_ERR | STATUS_DF) != 0 {
+                return Err(());
+            }
+            if status & STATUS_DRQ != 0 {
+                return Ok(());
+            }
+        }
+    }
+    Err(())
+}
+
+/// Selects the drive, programs the LBA registers and sends `command`.
+fn issue(lba_addr: u32, sectors: u8, command: u8) -> Result<(), ()> {
+    let mut sector_count_port = Port::<u8>::new(SECTOR_COUNT_PORT);
+    let mut lba_lo = Port::<u8>::new(LBA_LO_PORT);
+    let mut lba_mid = Port::<u8>::new(LBA_MID_PORT);
+    let mut lba_hi = Port::<u8>::new(LBA_HI_PORT);
+    let mut drive_head = Port::<u8>::new(DRIVE_HEAD_PORT);
+    let mut command_port = Port::<u8>::new(STATUS_COMMAND_PORT);
+
+    unsafe {
+        Port::<u8>::new(ALT_STATUS_PORT).write(0x02); // nIEN: we poll, so mask ATA IRQs
+        drive_head.write(ACTIVE_DRIVE | (((lba_addr >> 24) & 0x0F) as u8));
+    }
+    io_delay();
+    wait_not_busy()?;
+
+    unsafe {
+        sector_count_port.write(sectors);
+        lba_lo.write((lba_addr & 0xFF) as u8);
+        lba_mid.write(((lba_addr >> 8) & 0xFF) as u8);
+        lba_hi.write(((lba_addr >> 16) & 0xFF) as u8);
+        command_port.write(command);
+    }
+    Ok(())
+}
+
+/// Reads `sectors` sectors starting at `lba_addr` into `buffer` (256 u16 words per sector).
 pub fn read_sectors(lba_addr: u32, sectors: u8, buffer: &mut [u16]) -> Result<(), ()> {
-    // We only support reading into a buffer that matches the sector count size
-    assert!(buffer.len() >= (sectors as usize) * 256);
+    if sectors == 0 || buffer.len() < (sectors as usize) * 256 {
+        return Err(());
+    }
+    issue(lba_addr, sectors, 0x20)?; // READ SECTORS
 
     let mut data_port = Port::<u16>::new(DATA_PORT);
-    let mut sector_count_port = Port::<u8>::new(SECTOR_COUNT_PORT);
-    let mut lba_lo = Port::<u8>::new(LBA_LO_PORT);
-    let mut lba_mid = Port::<u8>::new(LBA_MID_PORT);
-    let mut lba_hi = Port::<u8>::new(LBA_HI_PORT);
-    let mut drive_head = Port::<u8>::new(DRIVE_HEAD_PORT);
-    let mut command_port = Port::<u8>::new(STATUS_COMMAND_PORT);
-
-    unsafe {
-        // Disable ATA interrupts on the primary controller
-        Port::<u8>::new(0x3F6).write(0x02);
-
-        // 1. Send the drive selection and LBA address high bits (24-27)
-        drive_head.write(ACTIVE_DRIVE | (((lba_addr >> 24) & 0x0F) as u8));
-        
-        // 2. Set the sector count to read
-        sector_count_port.write(sectors);
-        
-        // 3. Send the LBA address low, mid, and high bytes
-        lba_lo.write((lba_addr & 0xFF) as u8);
-        lba_mid.write(((lba_addr >> 8) & 0xFF) as u8);
-        lba_hi.write(((lba_addr >> 16) & 0xFF) as u8);
-        
-        // 4. Send the Command: Read Sectors (0x20)
-        command_port.write(0x20);
-    }
-
-    // 5. Read the data sector-by-sector
     for sector in 0..(sectors as usize) {
-        // Wait for the controller to make the sector data available
         wait_ready()?;
-        
-        // Read 256 u16 words (512 bytes) from the data register
         for word in 0..256 {
-            let index = sector * 256 + word;
-            buffer[index] = unsafe { data_port.read() };
+            buffer[sector * 256 + word] = unsafe { data_port.read() };
         }
     }
-
     Ok(())
 }
 
-/// Writes `sectors` number of sectors starting from LBA `lba_addr` from the buffer to the disk.
+/// Writes `sectors` sectors from `buffer` to `lba_addr` and flushes the drive cache.
 pub fn write_sectors(lba_addr: u32, sectors: u8, buffer: &[u16]) -> Result<(), ()> {
-    assert!(buffer.len() >= (sectors as usize) * 256);
+    if sectors == 0 || buffer.len() < (sectors as usize) * 256 {
+        return Err(());
+    }
+    issue(lba_addr, sectors, 0x30)?; // WRITE SECTORS
 
     let mut data_port = Port::<u16>::new(DATA_PORT);
-    let mut sector_count_port = Port::<u8>::new(SECTOR_COUNT_PORT);
-    let mut lba_lo = Port::<u8>::new(LBA_LO_PORT);
-    let mut lba_mid = Port::<u8>::new(LBA_MID_PORT);
-    let mut lba_hi = Port::<u8>::new(LBA_HI_PORT);
-    let mut drive_head = Port::<u8>::new(DRIVE_HEAD_PORT);
-    let mut command_port = Port::<u8>::new(STATUS_COMMAND_PORT);
-
-    unsafe {
-        // Disable ATA interrupts on the primary controller
-        Port::<u8>::new(0x3F6).write(0x02);
-
-        // 1. Send the drive selection and LBA address high bits
-        drive_head.write(ACTIVE_DRIVE | (((lba_addr >> 24) & 0x0F) as u8));
-        
-        // 2. Set the sector count to write
-        sector_count_port.write(sectors);
-        
-        // 3. Send the LBA address bytes
-        lba_lo.write((lba_addr & 0xFF) as u8);
-        lba_mid.write(((lba_addr >> 8) & 0xFF) as u8);
-        lba_hi.write(((lba_addr >> 16) & 0xFF) as u8);
-        
-        // 4. Send the Command: Write Sectors (0x30)
-        command_port.write(0x30);
-    }
-
-    // 5. Write the data sector-by-sector
     for sector in 0..(sectors as usize) {
-        // Wait for the controller to be ready to accept data
         wait_ready()?;
-        
-        // Write 256 u16 words to the data register
         for word in 0..256 {
-            let index = sector * 256 + word;
-            unsafe { data_port.write(buffer[index]) };
+            unsafe { data_port.write(buffer[sector * 256 + word]) };
         }
     }
 
-    // 6. Send the Command: Cache Flush (0xE7) to force disk sync
-    unsafe {
-        command_port.write(0xE7);
-    }
-    
-    // Wait for the sync command execution to complete
-    wait_ready()?;
-
-    Ok(())
+    // The drive goes busy while it commits the last sector, then FLUSH CACHE.
+    // A flush never raises DRQ, so wait for "not busy", not for DRQ.
+    wait_not_busy()?;
+    unsafe { Port::<u8>::new(STATUS_COMMAND_PORT).write(0xE7); }
+    wait_not_busy()
 }

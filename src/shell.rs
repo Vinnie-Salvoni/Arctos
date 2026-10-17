@@ -501,6 +501,7 @@ fn execute_command(cmd: &str) {
         _ => {
             crate::println!("[error] Unknown command: '{}'", command);
         }
+        
     }
 }
         other => {
@@ -508,6 +509,7 @@ fn execute_command(cmd: &str) {
             process_bus_intents();
         }
     }
+    
 }
 
 fn process_bus_intents() {

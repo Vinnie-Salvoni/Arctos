@@ -2,7 +2,7 @@
 // Arctos OS — Modular Intent Listener & Event Bus
 // =============================================================================
 // This module defines the core intent-driven abstractions for Arctos OS.
-// It exposes clean traits and extension hooks so future open-source developers
+// It exposes clean traits and extension hooks so future developers
 // can easily plug in LLM intent parsers, voice listeners, or custom hardware accelerators.
 
 use alloc::string::{String, ToString};

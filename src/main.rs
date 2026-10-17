@@ -109,7 +109,6 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("[ok] Hardware interrupts enabled.");
     println!("[ok] Virtual memory paging mapping complete.");
     println!("[ok] Heap allocator initialized (100 KiB).");
-    
     // Initialize AI Hardware Subsystem
     match ai::hardware::ArcHardwareContext::initialize() {
         Ok(_) => println!("[ok] Arc 140T Level Zero AI hardware initialized."),
