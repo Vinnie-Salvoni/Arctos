@@ -100,7 +100,7 @@ cargo install bootimage
 cargo run
 ```
 
-This builds the kernel for `x86_64-arctos.json`, creates a bootable image with `bootimage`, and launches QEMU at 1920x1080 in BGA graphics mode.
+This builds the kernel for `x86_64-arctos.json`, creates a bootable image with `bootimage`, and launches QEMU in text mode, with the command "gui" being used to enter 1920 x 1080 BGA graphics mode
 
 ### Optional: connect a local model
 
