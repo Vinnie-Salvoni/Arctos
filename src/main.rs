@@ -63,7 +63,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     mouse::init_mouse();
     serial::init();
-    x86_64::instructions::interrupts::enable();
+
+    // Keep interrupts disabled until memory and global services are ready.
+
+    // 3. Initialize Virtual Memory & Heap Allocator
 
     // 3. Initialize Virtual Memory & Heap Allocator
     let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
@@ -72,8 +75,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         unsafe { memory::BootInfoFrameAllocator::init(&boot_info.memory_map) };
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
-// Initialize the global memory mapper for kernel memory operations.
+    // Initialize the global memory mapper for kernel memory operations.
     memory_mapper::init(mapper, frame_allocator, boot_info.physical_memory_offset);
+
+    // All core memory services are initialized; hardware interrupts can now run.
+    x86_64::instructions::interrupts::enable();
 
     // 4. Print Boot Banner (Visual Output Starts Here)
     {
@@ -147,10 +153,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("[ok] Kernel bootstrap complete.");
 
     if fs::mount() {
-    println!("[ok] Filesystem mounted successfully.");
-} else {
-    println!("[warn] Filesystem unavailable; disk commands may not work.");
-}
+        println!("[ok] Filesystem mounted successfully.");
+    } else {
+        println!("[warn] Filesystem unavailable; disk commands may not work.");
+    }
 
     shell::run();
 }

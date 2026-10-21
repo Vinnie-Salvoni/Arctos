@@ -214,7 +214,6 @@ pub fn restore_text_mode() {
         Port::<u8>::new(0x3C0).write(0x20); // Enable video flag
     }
 
-
     load_embedded_font();
 
     // Free the backbuffer vector allocation (64,000 bytes) from the heap

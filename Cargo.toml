@@ -4,12 +4,11 @@ version = "0.1.11"
 edition = "2021"
 authors = ["Vincenzo Salvoni <vinniesalvoni@gmail.com>"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
-description = "A bare-metal x86_64 operating system with native AI integration"
+description = "A bare-metal x86_64 operating system"
 
 [package.metadata.bootimage]
-run-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-drive", "file=target/model_disk.bin,format=raw,index=2,media=disk", "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on", "-rtc", "clock=host"]
-test-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-drive", "file=target/model_disk.bin,format=raw,index=2,media=disk", "-rtc", "clock=host"]
-
+run-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on", "-rtc", "clock=host"]
+test-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-rtc", "clock=host"]
 
 [dependencies]
 volatile = "0.2.7"
@@ -33,10 +32,6 @@ features = ["spin_no_std"]
 opt-level = 3
 overflow-checks = false
 debug-assertions = false
-
-[features]
-default = []
-legacy-ring0-apps = []
 
 [workspace]
 members = []
