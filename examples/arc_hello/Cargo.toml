@@ -1,9 +1,0 @@
-[package]
-name = "arctos-hello"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-arctos_sdk = { path = "../../sdk" }
-
-[workspace]

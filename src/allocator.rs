@@ -19,7 +19,7 @@ static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
 // 2. Define where the heap lives in virtual memory and how big it is
 pub const HEAP_START: usize = 0x_4444_4444_0000;
-pub const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB Heap for neural network matrices
+pub const HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 
 /// Maps the heap pages in virtual memory and initializes the allocator.
 pub fn init_heap(
