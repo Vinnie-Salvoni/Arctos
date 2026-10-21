@@ -14,13 +14,13 @@ use alloc::vec::Vec;
 use pc_keyboard::DecodedKey;
 use spin::Mutex;
 
-// Keep test allocations alive until the user runs `free`.
 static ALLOCATED_CHUNKS: Mutex<Vec<Box<[u8]>>> = Mutex::new(Vec::new());
+static FORMAT_CONFIRMATION: Mutex<bool> = Mutex::new(false);
 
-// Commands available to the shell and its autocomplete.
 const COMMANDS: &[&str] = &[
-    "help", "info", "clear", "echo", "print", "alloc", "free", "ls", "dir", "cat", "reboot",
-    "restart", "shutdown", "poweroff",
+    "help", "nethelp", "info", "clear", "echo", "print", "alloc", "free", "ls", "dir", "cat",
+    "format", "confirm", "cancel", "reboot", "restart", "shutdown", "poweroff", "pci", "netinfo",
+    "nettest", "netrx",
 ];
 
 // ---------------------------------------------------------------------------
@@ -30,14 +30,12 @@ const COMMANDS: &[&str] = &[
 pub fn run() -> ! {
     {
         let mut writer = WRITER.lock();
-
         writer.window = Window {
             x_start: 0,
             y_start: 0,
             width: 80,
             height: 25,
         };
-
         writer.column_position = 0;
         writer.row_position = 0;
         writer.set_color(Color::White, Color::Black);
@@ -67,7 +65,6 @@ pub fn run() -> ! {
                         crate::println!("");
 
                         let command = input_buffer.trim().to_string();
-
                         if !command.is_empty() {
                             execute_command(&command);
                         }
@@ -93,10 +90,8 @@ pub fn run() -> ! {
                     '\t' => {
                         if let Some(suggestion) = get_autocomplete_match(&input_buffer) {
                             clear_prompt_line(input_buffer.len());
-
                             input_buffer = String::from(suggestion);
                             crate::print!("{}", input_buffer);
-
                             clear_ghost_suggestions();
                         }
                     }
@@ -121,9 +116,46 @@ pub fn run() -> ! {
             }
         }
 
-        // Halt the CPU until the next interrupt.
         x86_64::instructions::hlt();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Help
+// ---------------------------------------------------------------------------
+
+fn print_help() {
+    crate::println!("--- Arctos Shell ---");
+    crate::println!("help              Show general commands");
+    crate::println!("nethelp           Show networking commands");
+    crate::println!("info              Kernel and heap information");
+    crate::println!("clear             Clear the terminal");
+    crate::println!("echo <text>       Print text");
+    crate::println!("alloc [bytes]     Allocate a test memory block");
+    crate::println!("free              Release the last test allocation");
+    crate::println!("ls / dir          List stored files");
+    crate::println!("cat <filename>    Read a stored file");
+    crate::println!("format            Request filesystem formatting");
+    crate::println!("confirm           Confirm pending formatting");
+    crate::println!("cancel            Cancel pending formatting");
+    crate::println!("reboot / restart  Restart the machine");
+    crate::println!("shutdown          Request machine shutdown");
+}
+
+fn print_nethelp() {
+    crate::println!("--- Arctos Networking Commands ---");
+    crate::println!("");
+    crate::println!("Device discovery");
+    crate::println!("  pci             Scan PCI devices");
+    crate::println!("  netinfo         Inspect network controllers");
+    crate::println!("");
+    crate::println!("Network tests");
+    crate::println!("  nettest         Test E1000 transmission");
+    crate::println!("  netrx           Poll for received Ethernet frames");
+    crate::println!("");
+    crate::println!("Note: nettest verifies TX descriptor completion.");
+    crate::println!("It does not prove that a remote device received the frame.");
+    crate::println!("netrx requires incoming traffic to test reception.");
 }
 
 // ---------------------------------------------------------------------------
@@ -132,29 +164,34 @@ pub fn run() -> ! {
 
 fn execute_command(cmd: &str) {
     let (command_name, args) = cmd.split_once(char::is_whitespace).unwrap_or((cmd, ""));
-
     let command_string = command_name.to_ascii_lowercase();
     let command = command_string.as_str();
     let args = args.trim();
 
     match command {
         "help" => {
-            crate::println!("--- Arctos Shell Commands ---");
-            crate::println!("help              - List commands");
-            crate::println!("info              - Kernel and heap information");
-            crate::println!("clear             - Clear the terminal");
-            crate::println!("echo <text>       - Print text");
-            crate::println!("alloc [bytes]     - Allocate a test memory block");
-            crate::println!("free              - Release the last test allocation");
-            crate::println!("ls                - List stored files");
-            crate::println!("cat <filename>    - Read a stored file");
-            crate::println!("reboot            - Restart the machine");
-            crate::println!("shutdown          - Request machine shutdown");
+            if !args.is_empty() {
+                crate::println!("[error] Usage: help");
+                return;
+            }
+            print_help();
+        }
+
+        "nethelp" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: nethelp");
+                return;
+            }
+            print_nethelp();
         }
 
         "info" => {
-            let stats = heap_stats();
+            if !args.is_empty() {
+                crate::println!("[error] Usage: info");
+                return;
+            }
 
+            let stats = heap_stats();
             crate::println!("--- Arctos OS ---");
             crate::println!("Version: {}", env!("CARGO_PKG_VERSION"));
             crate::println!("Architecture: x86_64");
@@ -164,6 +201,10 @@ fn execute_command(cmd: &str) {
         }
 
         "clear" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: clear");
+                return;
+            }
             let mut writer = WRITER.lock();
             writer.clear_screen();
         }
@@ -196,16 +237,11 @@ fn execute_command(cmd: &str) {
                 return;
             }
 
-            {
-                let chunks = ALLOCATED_CHUNKS.lock();
-
-                if chunks.len() >= MAX_ACTIVE_ALLOCATIONS {
-                    crate::println!("[error] Too many active test allocations. Run 'free' first.");
-                    return;
-                }
+            if ALLOCATED_CHUNKS.lock().len() >= MAX_ACTIVE_ALLOCATIONS {
+                crate::println!("[error] Too many active test allocations. Run 'free' first.");
+                return;
             }
 
-            // Allocate memory and fill it with a known test pattern.
             let chunk = alloc::vec![0x5Au8; size].into_boxed_slice();
 
             if chunk.iter().all(|byte| *byte == 0x5A) {
@@ -214,7 +250,6 @@ fn execute_command(cmd: &str) {
                     size,
                     chunk.as_ptr()
                 );
-
                 ALLOCATED_CHUNKS.lock().push(chunk);
             } else {
                 crate::println!("[error] Allocation verification failed.");
@@ -222,12 +257,16 @@ fn execute_command(cmd: &str) {
         }
 
         "free" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: free");
+                return;
+            }
+
             let chunk = ALLOCATED_CHUNKS.lock().pop();
 
             if let Some(chunk) = chunk {
                 let size = chunk.len();
                 let verified = chunk.iter().all(|byte| *byte == 0x5A);
-
                 drop(chunk);
 
                 if verified {
@@ -241,6 +280,11 @@ fn execute_command(cmd: &str) {
         }
 
         "ls" | "dir" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: ls");
+                return;
+            }
+
             if !fs::mount() {
                 crate::println!("[error] Could not mount the filesystem. Nothing was formatted.");
                 return;
@@ -252,7 +296,6 @@ fn execute_command(cmd: &str) {
                 crate::println!("No files found.");
             } else {
                 crate::println!("--- Files ---");
-
                 for name in files {
                     crate::println!("{}", name);
                 }
@@ -273,44 +316,442 @@ fn execute_command(cmd: &str) {
             match fs::read_file(args) {
                 Some(data) => match core::str::from_utf8(&data) {
                     Ok(contents) => crate::println!("{}", contents),
-
                     Err(_) => {
                         crate::println!("[info] File contains binary data ({} bytes).", data.len());
                     }
                 },
-
-                None => {
-                    crate::println!("[error] File '{}' not found.", args);
-                }
+                None => crate::println!("[error] File '{}' not found.", args),
             }
         }
 
-        "reboot" | "restart" => {
-            crate::println!("[system] Rebooting...");
+        "pci" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: pci");
+                return;
+            }
 
+            crate::println!("[PCI] Scanning PCI devices...");
+            let devices = crate::pci::scan();
+
+            if devices.is_empty() {
+                crate::println!("[PCI] No devices found.");
+                return;
+            }
+
+            for device in devices.iter() {
+                crate::println!(
+                    "Bus {:02X} Device {:02X} Function {} | Vendor {:04X} Device {:04X} | Class {:02X}:{:02X}",
+                    device.bus,
+                    device.device,
+                    device.function,
+                    device.vendor_id,
+                    device.device_id,
+                    device.class_code,
+                    device.subclass
+                );
+
+                if device.class_code == 0x02 {
+                    crate::println!("  [network] Network controller detected.");
+
+                    for index in 0..6 {
+                        match crate::pci::read_bar(device, index) {
+                            Some(crate::pci::PciBar::Unused) => {}
+                            Some(crate::pci::PciBar::Io { port }) => {
+                                crate::println!("  BAR{}: I/O port 0x{:04X}", index, port);
+                            }
+                            Some(crate::pci::PciBar::Memory32 {
+                                address,
+                                prefetchable,
+                            }) => {
+                                crate::println!(
+                                    "  BAR{}: 32-bit memory 0x{:08X}, prefetchable={}",
+                                    index,
+                                    address,
+                                    prefetchable
+                                );
+                            }
+                            Some(crate::pci::PciBar::Memory64 {
+                                address,
+                                prefetchable,
+                            }) => {
+                                crate::println!(
+                                    "  BAR{}: 64-bit memory 0x{:016X}, prefetchable={}",
+                                    index,
+                                    address,
+                                    prefetchable
+                                );
+                            }
+                            None => crate::println!("  BAR{}: unsupported or invalid", index),
+                        }
+                    }
+                }
+            }
+
+            crate::println!("[PCI] Scan complete.");
+        }
+
+        "netinfo" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: netinfo");
+                return;
+            }
+
+            crate::println!("[NET] Scanning for network controllers...");
+            let devices = crate::pci::scan();
+            let mut found = 0usize;
+
+            for device in devices.iter() {
+                if device.class_code != 0x02 {
+                    continue;
+                }
+
+                found += 1;
+                crate::println!("");
+                crate::println!(
+                    "[NET] Controller {}: PCI {:02X}:{:02X}.{}",
+                    found,
+                    device.bus,
+                    device.device,
+                    device.function
+                );
+                crate::println!(
+                    "  Vendor: 0x{:04X} | Device: 0x{:04X}",
+                    device.vendor_id,
+                    device.device_id
+                );
+
+                let supported = device.vendor_id == 0x8086 && device.device_id == 0x100E;
+                crate::println!(
+                    "  Driver: {}",
+                    if supported {
+                        "Intel E1000 (82540EM)"
+                    } else {
+                        "Unidentified / unsupported"
+                    }
+                );
+
+                if !supported {
+                    crate::println!("  Status: Detected; compatible driver not implemented.");
+                } else {
+                    let bar0 = match crate::pci::read_bar(device, 0) {
+                        Some(crate::pci::PciBar::Memory32 { address, .. }) => Some(address as u64),
+                        Some(crate::pci::PciBar::Memory64 { address, .. }) => Some(address),
+                        _ => None,
+                    };
+
+                    match bar0 {
+                        Some(address) => match unsafe { crate::net::e1000::read_mac(address) } {
+                            Some(mac) => {
+                                crate::println!(
+                                    "  MAC address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                    mac[0],
+                                    mac[1],
+                                    mac[2],
+                                    mac[3],
+                                    mac[4],
+                                    mac[5]
+                                );
+                                crate::println!("  Status: MAC address read successfully.");
+                            }
+                            None => crate::println!("  ERROR: Could not read a valid MAC address."),
+                        },
+                        None => crate::println!("  ERROR: No usable MMIO BAR0 found."),
+                    }
+                }
+
+                crate::println!("  PCI BARs:");
+                for index in 0..6 {
+                    match crate::pci::read_bar(device, index) {
+                        Some(crate::pci::PciBar::Unused) => {}
+                        Some(crate::pci::PciBar::Io { port }) => {
+                            crate::println!("    BAR{}: I/O port 0x{:04X}", index, port);
+                        }
+                        Some(crate::pci::PciBar::Memory32 {
+                            address,
+                            prefetchable,
+                        }) => {
+                            crate::println!(
+                                "    BAR{}: MMIO 0x{:08X}, prefetchable={}",
+                                index,
+                                address,
+                                prefetchable
+                            );
+                        }
+                        Some(crate::pci::PciBar::Memory64 {
+                            address,
+                            prefetchable,
+                        }) => {
+                            crate::println!(
+                                "    BAR{}: MMIO 0x{:016X}, prefetchable={}",
+                                index,
+                                address,
+                                prefetchable
+                            );
+                        }
+                        None => crate::println!("    BAR{}: unsupported or invalid", index),
+                    }
+                }
+            }
+
+            if found == 0 {
+                crate::println!("[NET] No PCI network controllers found.");
+            } else {
+                crate::println!("");
+                crate::println!("[NET] Scan complete: {} controller(s) detected.", found);
+            }
+        }
+
+        "nettest" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: nettest");
+                return;
+            }
+
+            crate::println!("[NET] Searching for Intel E1000...");
+            let devices = crate::pci::scan();
+
+            let device = match devices
+                .iter()
+                .find(|d| d.vendor_id == 0x8086 && d.device_id == 0x100E)
+            {
+                Some(device) => *device,
+                None => {
+                    crate::println!("[error] Intel E1000 (8086:100E) not found.");
+                    return;
+                }
+            };
+
+            let bar0 = match crate::pci::read_bar(&device, 0) {
+                Some(crate::pci::PciBar::Memory32 { address, .. }) => address as u64,
+                Some(crate::pci::PciBar::Memory64 { address, .. }) => address,
+                _ => {
+                    crate::println!("[error] E1000 BAR0 is not a memory BAR.");
+                    return;
+                }
+            };
+
+            crate::println!("[NET] E1000 found at MMIO {:#X}", bar0);
+            crate::println!("[NET] Initialising DMA transmit ring...");
+            let mut driver = crate::net::e1000::E1000Driver::new(device, bar0);
+
+            if let Err(error) = crate::net::driver::NetworkDriver::init(&mut driver) {
+                crate::println!("[error] E1000 initialisation failed: {:?}", error);
+                return;
+            }
+
+            let info = crate::net::driver::NetworkDriver::info(&driver);
+            crate::println!(
+                "[NET] MAC: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                info.mac_address[0],
+                info.mac_address[1],
+                info.mac_address[2],
+                info.mac_address[3],
+                info.mac_address[4],
+                info.mac_address[5]
+            );
+            crate::println!(
+                "[NET] Link reported: {}",
+                if info.link_up { "UP" } else { "DOWN" }
+            );
+
+            let mut frame = [0u8; 60];
+            frame[..6].fill(0xFF);
+            frame[6..12].copy_from_slice(&info.mac_address);
+            frame[12..14].copy_from_slice(&0x88B5u16.to_be_bytes());
+
+            let payload = b"ARCTOS E1000 DMA TRANSMIT TEST";
+            frame[14..14 + payload.len()].copy_from_slice(payload);
+
+            crate::println!("[NET] Transmitting {}-byte test frame...", frame.len());
+
+            match crate::net::driver::NetworkDriver::transmit(&mut driver, &frame) {
+                Ok(()) => {
+                    crate::println!("[NET] TX SUCCESS: descriptor completed.");
+                    crate::println!(
+                        "[NET] This confirms hardware processed the TX descriptor; \
+                         it does not yet confirm remote reception."
+                    );
+                }
+                Err(error) => crate::println!("[error] TX failed: {:?}", error),
+            }
+        }
+
+        "netrx" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: netrx");
+                return;
+            }
+
+            crate::println!("[NET] Searching for Intel E1000...");
+            let devices = crate::pci::scan();
+
+            let device = match devices
+                .iter()
+                .find(|d| d.vendor_id == 0x8086 && d.device_id == 0x100E)
+            {
+                Some(device) => *device,
+                None => {
+                    crate::println!("[error] Intel E1000 not found.");
+                    return;
+                }
+            };
+
+            let bar0 = match crate::pci::read_bar(&device, 0) {
+                Some(crate::pci::PciBar::Memory32 { address, .. }) => address as u64,
+                Some(crate::pci::PciBar::Memory64 { address, .. }) => address,
+                _ => {
+                    crate::println!("[error] Invalid E1000 BAR0.");
+                    return;
+                }
+            };
+
+            let mut driver = crate::net::e1000::E1000Driver::new(device, bar0);
+            if let Err(error) = crate::net::driver::NetworkDriver::init(&mut driver) {
+                crate::println!("[error] E1000 initialisation failed: {:?}", error);
+                return;
+            }
+
+            crate::println!("[NET] RX ring initialised.");
+            crate::println!("[NET] Polling for incoming Ethernet frames...");
+            let mut frame = [0u8; 2048];
+
+            for _ in 0..1_000_000usize {
+                match crate::net::driver::NetworkDriver::receive(&mut driver, &mut frame) {
+                    Ok(Some(length)) => {
+                        if length >= 14 {
+                            crate::println!("[NET] Received {}-byte frame", length);
+                            crate::println!(
+                                "[NET] Destination: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                frame[0],
+                                frame[1],
+                                frame[2],
+                                frame[3],
+                                frame[4],
+                                frame[5]
+                            );
+                            crate::println!(
+                                "[NET] Source: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                                frame[6],
+                                frame[7],
+                                frame[8],
+                                frame[9],
+                                frame[10],
+                                frame[11]
+                            );
+                            crate::println!(
+                                "[NET] EtherType: 0x{:02X}{:02X}",
+                                frame[12],
+                                frame[13]
+                            );
+                        } else {
+                            crate::println!("[NET] Received a short Ethernet frame.");
+                        }
+                        return;
+                    }
+                    Ok(None) => core::hint::spin_loop(),
+                    Err(error) => {
+                        crate::println!("[error] RX failed: {:?}", error);
+                        return;
+                    }
+                }
+            }
+
+            crate::println!("[NET] No frame received during this polling window.");
+            crate::println!(
+                "[NET] RX is polling-only; incoming traffic must be generated to test it."
+            );
+        }
+
+        "format" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: format");
+                return;
+            }
+
+            if fs::mount() {
+                crate::println!("[error] A valid AIVFS filesystem already exists.");
+                crate::println!("[info] Refusing to overwrite it.");
+                return;
+            }
+
+            *FORMAT_CONFIRMATION.lock() = true;
+            crate::println!("[warning] Formatting overwrites filesystem metadata.");
+            crate::println!("[warning] Current target: primary IDE slave.");
+            crate::println!("[warning] Only proceed with the disposable QEMU test disk.");
+            crate::println!("Type 'confirm' to proceed, or 'cancel' to abort.");
+        }
+
+        "confirm" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: confirm");
+                return;
+            }
+
+            let pending = {
+                let mut confirmation = FORMAT_CONFIRMATION.lock();
+                let pending = *confirmation;
+                *confirmation = false;
+                pending
+            };
+
+            if !pending {
+                crate::println!("[info] No pending format operation.");
+                return;
+            }
+
+            if fs::mount() {
+                crate::println!("[error] A valid AIVFS filesystem already exists.");
+                crate::println!("[info] Refusing to overwrite it.");
+                return;
+            }
+
+            if fs::format() && fs::mount() {
+                crate::println!("[ok] Filesystem formatted and mounted.");
+            } else {
+                crate::println!("[error] Formatting or verification failed.");
+            }
+        }
+
+        "cancel" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: cancel");
+                return;
+            }
+            *FORMAT_CONFIRMATION.lock() = false;
+            crate::println!("[info] Pending format operation cancelled.");
+        }
+
+        "reboot" | "restart" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: reboot");
+                return;
+            }
+
+            crate::println!("[system] Rebooting...");
             let mut port = x86_64::instructions::port::Port::<u8>::new(0x64);
 
             unsafe {
                 port.write(0xFE);
             }
 
-            // If the hardware does not reboot, remain halted.
             loop {
                 x86_64::instructions::hlt();
             }
         }
 
         "shutdown" | "poweroff" => {
-            crate::println!("[system] Requesting shutdown...");
+            if !args.is_empty() {
+                crate::println!("[error] Usage: shutdown");
+                return;
+            }
 
-            // Common QEMU/Bochs ACPI shutdown port.
+            crate::println!("[system] Requesting shutdown...");
             let mut acpi_port = x86_64::instructions::port::Port::<u16>::new(0x604);
 
             unsafe {
                 acpi_port.write(0x2000);
             }
 
-            // Some emulators use the Bochs shutdown port.
             let mut bochs_port = x86_64::instructions::port::Port::<u8>::new(0x501);
 
             unsafe {
@@ -337,7 +778,6 @@ fn execute_command(cmd: &str) {
 
 pub fn print_prompt() {
     let mut writer = WRITER.lock();
-
     writer.set_color(Color::LightCyan, Color::Black);
     writer.write_string("arctos > ");
     writer.set_color(Color::White, Color::Black);
@@ -345,7 +785,6 @@ pub fn print_prompt() {
 
 fn clear_prompt_line(input_len: usize) {
     let mut writer = WRITER.lock();
-
     let start_col = 9;
     let end_col = (start_col + input_len).min(80);
     let blank = ColorCode::new(Color::White, Color::Black);
@@ -374,9 +813,7 @@ fn get_autocomplete_match(input: &str) -> Option<&'static str> {
 
 fn draw_ghost_suggestion(input: &str) {
     if let Some(suggestion) = get_autocomplete_match(input) {
-        // Shell input is restricted to ASCII, so byte lengths match characters.
         let suffix = &suggestion[input.len()..];
-
         let mut writer = WRITER.lock();
         let start_col = writer.column_position.min(79);
         let ghost_color = ColorCode::new(Color::DarkGray, Color::Black);
@@ -384,11 +821,9 @@ fn draw_ghost_suggestion(input: &str) {
 
         for (offset, byte) in suffix.bytes().enumerate() {
             let col = start_col + offset;
-
             if col >= 80 {
                 break;
             }
-
             writer.write_char_at(row, col, byte, ghost_color);
         }
     }
@@ -396,7 +831,6 @@ fn draw_ghost_suggestion(input: &str) {
 
 fn clear_ghost_suggestions() {
     let mut writer = WRITER.lock();
-
     let start_col = writer.column_position.min(80);
     let blank_color = ColorCode::new(Color::White, Color::Black);
     let row = 24;
