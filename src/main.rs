@@ -72,7 +72,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         unsafe { memory::BootInfoFrameAllocator::init(&boot_info.memory_map) };
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
 
-    // Initialize global memory mapper for shell and model loading
+// Initialize the global memory mapper for kernel memory operations.
     memory_mapper::init(mapper, frame_allocator, boot_info.physical_memory_offset);
 
     // 4. Print Boot Banner (Visual Output Starts Here)
@@ -101,8 +101,7 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("[ok] PS/2 Mouse Controller initialized (IRQ 12).");
     println!("[ok] Hardware interrupts enabled.");
     println!("[ok] Virtual memory paging mapping complete.");
-    println!("[ok] Heap allocator initialized (100 KiB).");
-    // Initialize AI Hardware Subsystem
+    println!("[ok] Heap allocator initialized (16 MiB).");
     println!();
 
     // 6. Test Heap Allocations & Verify Memory Integrity
@@ -147,7 +146,11 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     }
     println!("[ok] Kernel bootstrap complete.");
 
-    fs::mount();
+    if fs::mount() {
+    println!("[ok] Filesystem mounted successfully.");
+} else {
+    println!("[warn] Filesystem unavailable; disk commands may not work.");
+}
 
     shell::run();
 }
