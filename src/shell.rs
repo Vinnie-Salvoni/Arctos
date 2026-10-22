@@ -20,7 +20,7 @@ static FORMAT_CONFIRMATION: Mutex<bool> = Mutex::new(false);
 const COMMANDS: &[&str] = &[
     "help", "nethelp", "info", "clear", "echo", "print", "alloc", "free", "ls", "dir", "cat",
     "format", "confirm", "cancel", "reboot", "restart", "shutdown", "poweroff", "pci", "netinfo",
-    "nettest", "netrx", "netloop",
+    "nettest", "netrx", "netloop", "sysmon", "bootlog",
 ];
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,64 @@ fn print_help() {
     crate::println!("cancel            Cancel pending formatting");
     crate::println!("reboot / restart  Restart the machine");
     crate::println!("shutdown          Request machine shutdown");
-    crate::println!("netloop           Test E1000 transmission and reception in a loop");
+    crate::println!("sysmon            Show system monitoring information");
+    crate::println!("bootlog           Show recorded startup events");
+}
+
+/// Display live Arctos system statistics.
+fn print_sysmon() {
+    let (heap_used, heap_free) = heap_stats();
+
+    crate::println!("========================================");
+    crate::println!("          ARCTOS SYSTEM MONITOR");
+    crate::println!("========================================");
+
+    crate::println!("");
+    crate::println!("SYSTEM");
+    crate::println!("  OS version:  {}", env!("CARGO_PKG_VERSION"));
+    crate::println!("  Architecture: x86_64");
+
+    // TIMER_TICKS is incremented by the hardware timer interrupt.
+    // The PIT is configured for approximately 1000 interrupts per second.
+    let ticks = crate::interrupts::TIMER_TICKS.load(core::sync::atomic::Ordering::Relaxed);
+
+    let uptime_seconds = ticks / 1000;
+    let hours = uptime_seconds / 3600;
+    let minutes = (uptime_seconds % 3600) / 60;
+    let seconds = uptime_seconds % 60;
+
+    crate::println!("  Uptime:       {:02}:{:02}:{:02}", hours, minutes, seconds);
+    crate::println!("  Timer ticks:  {}", ticks);
+
+    let heap_total = heap_used + heap_free;
+    let mib = 1024 * 1024;
+
+    crate::println!("  Used:  {} bytes ({} MiB)", heap_used, heap_used / mib);
+    crate::println!("  Free:  {} bytes ({} MiB)", heap_free, heap_free / mib);
+    crate::println!("  Total: {} MiB", heap_total / mib);
+
+    crate::println!(
+        "  Free: {} bytes ({:.2} MiB)",
+        heap_free,
+        heap_free as f64 / (1024.0 * 1024.0)
+    );
+    crate::println!("  Total: {} MiB", (heap_used + heap_free) / (1024 * 1024));
+
+    crate::println!("");
+    crate::println!("PHYSICAL MEMORY MAP");
+
+    match crate::memory_mapper::system_memory_stats() {
+        Some((total_bytes, usable_bytes)) => {
+            crate::println!("  Mapped regions: {} MiB", total_bytes / (1024 * 1024));
+            crate::println!("  Usable regions: {} MiB", usable_bytes / (1024 * 1024));
+        }
+        None => {
+            crate::println!("  Memory statistics unavailable.");
+        }
+    }
+
+    crate::println!("");
+    crate::println!("========================================");
 }
 
 fn print_nethelp() {
@@ -158,6 +215,7 @@ fn print_nethelp() {
     crate::println!("Note: nettest verifies TX descriptor completion.");
     crate::println!("It does not prove that a remote device received the frame.");
     crate::println!("netrx requires incoming traffic to test reception.");
+    crate::println!("netloop enables the E1000's internal loopback mode.");
 }
 
 // ---------------------------------------------------------------------------
@@ -187,6 +245,22 @@ fn execute_command(cmd: &str) {
             print_nethelp();
         }
 
+        "sysmon" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: sysmon");
+                return;
+            }
+
+            print_sysmon();
+        }
+        "bootlog" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: bootlog");
+                return;
+            }
+
+            crate::bootlog::print();
+        }
         "info" => {
             if !args.is_empty() {
                 crate::println!("[error] Usage: info");

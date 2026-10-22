@@ -6,6 +6,9 @@ authors = ["Vincenzo Salvoni <vinniesalvoni@gmail.com>"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 description = "A bare-metal x86_64 operating system"
 
+[features]
+default = []
+verbose-boot = []
 
 [package.metadata.bootimage]
 run-args = [

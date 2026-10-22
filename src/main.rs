@@ -22,6 +22,7 @@
 // Bring in Rust's standard dynamic allocation library
 extern crate alloc;
 mod allocator;
+mod bootlog;
 mod disk;
 mod fs;
 mod gdt;
@@ -83,11 +84,27 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     // All core memory services are initialized; hardware interrupts can now run.
     x86_64::instructions::interrupts::enable();
 
-    // 4. Print Boot Banner (Visual Output Starts Here)
+    // 4. Record completed initialization and display the splash screen.
+    // The heap is ready, so the boot log can safely allocate memory.
+    bootlog::record("PIT timer initialized.");
+    bootlog::record("GDT and TSS initialized.");
+    bootlog::record("Interrupt descriptor table initialized.");
+    bootlog::record("Programmable interrupt controllers initialized.");
+    bootlog::record("PS/2 mouse initialization attempted.");
+    bootlog::record("Serial output initialized.");
+    bootlog::record("Virtual memory initialized.");
+    bootlog::record("Kernel heap allocator initialized.");
+    bootlog::record("Global memory mapper initialized.");
+    bootlog::record("Hardware interrupts enabled.");
+
     {
         let mut writer = vga_buffer::WRITER.lock();
+        writer.clear_screen();
         writer.set_color(vga_buffer::Color::LightCyan, vga_buffer::Color::Black);
     }
+
+    println!();
+    println!();
     println!("    _                _              ___  ____  ");
     println!("   / \\   _ __ ___ | |_ ___  ___   / _ \\/ ___| ");
     println!("  / _ \\ | '__/ __|| __/ _ \\/ __| | | | \\___ \\ ");
@@ -95,22 +112,55 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
     println!("/_/   \\_\\_|  \\___| \\__\\___/|___/  \\___/|____/ ");
     println!();
 
-    // 5. Print System Initialization Status
     {
         let mut writer = vga_buffer::WRITER.lock();
         writer.set_color(vga_buffer::Color::LightGreen, vga_buffer::Color::Black);
     }
-    println!("[boot] Arctos OS v0.1.0");
-    println!("[boot] Architecture: x86_64 (bare-metal)");
-    println!("[boot] VGA text buffer initialized at 0xB8000");
-    println!("[ok] GDT & TSS segment descriptors loaded.");
-    println!("[ok] IDT interrupt handlers registered.");
-    println!("[ok] Dual 8259 PIC controllers initialized.");
-    println!("[ok] PS/2 Mouse Controller initialized (IRQ 12).");
-    println!("[ok] Hardware interrupts enabled.");
-    println!("[ok] Virtual memory paging mapping complete.");
-    println!("[ok] Heap allocator initialized (16 MiB).");
+
+    println!("  ARCTOS OS  v{}", env!("CARGO_PKG_VERSION"));
+    println!("  x86_64  |  Rust kernel");
+    println!("  -----------------------------------------------");
+    println!("  [OK] Core initialization complete");
+
+    #[cfg(feature = "verbose-boot")]
+    {
+        println!();
+        println!("  VERBOSE BOOT");
+        println!("  [OK] PIT timer initialized");
+        println!("  [OK] GDT and TSS initialized");
+        println!("  [OK] Interrupt descriptor table initialized");
+        println!("  [OK] Interrupt controllers initialized");
+        println!("  [OK] Mouse initialization attempted");
+        println!("  [OK] Serial output initialized");
+        println!("  [OK] Virtual memory initialized");
+        println!("  [OK] Kernel heap initialized");
+        println!("  [OK] Global memory mapper initialized");
+        println!("  [OK] Hardware interrupts enabled");
+    }
+
+    let (heap_used, heap_free) = allocator::heap_stats();
+
     println!();
+    println!(
+        "  Heap: {} MiB total | {} bytes used",
+        (heap_used + heap_free) / (1024 * 1024),
+        heap_used,
+    );
+
+    match memory_mapper::system_memory_stats() {
+        Some((total_bytes, usable_bytes)) => {
+            println!(
+                "  Memory map: {} MiB total | {} MiB usable",
+                total_bytes / (1024 * 1024),
+                usable_bytes / (1024 * 1024),
+            );
+        }
+        None => {
+            println!("  Memory map: unavailable");
+        }
+    }
+
+    println!("  Starting kernel self-tests...");
 
     // 6. Test Heap Allocations & Verify Memory Integrity
     {
