@@ -6,9 +6,14 @@ use crate::fs;
 use crate::memory::BootInfoFrameAllocator;
 use spin::Mutex;
 use x86_64::{
-    structures::paging::{FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags},
-    VirtAddr,
+    structures::paging::{
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB,
+    },
+    PhysAddr, VirtAddr,
 };
+/// Reserved virtual base for PCI MMIO mappings.
+/// Must remain outside the kernel heap and existing mapped regions.
+const MMIO_VIRTUAL_BASE: u64 = 0xFFFF_FF00_0000_0000;
 
 // Thread-safe globals to allow the shell (which runs asynchronously after boot)
 // to perform virtual page mapping.
@@ -117,4 +122,119 @@ pub fn unmap_virtual_addr(start_addr: u64, size_bytes: usize) -> Option<()> {
         }
     }
     Some(())
+}
+
+/// Map a physical MMIO region into a reserved virtual address range.
+///
+/// Reuses an existing mapping only when every requested page maps to the
+/// expected physical frame.
+///
+/// # Safety
+/// The caller must verify that the physical range belongs to a valid MMIO
+/// device and that the reserved virtual range is not used for another purpose.
+pub unsafe fn map_mmio(physical_start: u64, size: usize) -> Option<u64> {
+    if size == 0 {
+        return None;
+    }
+
+    let offset = physical_start & 0xFFF;
+    let physical_page_start = physical_start & !0xFFF;
+    let span = (size as u64).checked_add(offset)?;
+    let rounded_span = span.checked_add(0xFFF)? & !0xFFF;
+    let page_count = rounded_span / 4096;
+
+    let virtual_start = VirtAddr::new(MMIO_VIRTUAL_BASE);
+
+    let mut mapper_guard = MAPPER.lock();
+    let mut allocator_guard = FRAME_ALLOCATOR.lock();
+
+    let mapper = mapper_guard.as_mut()?;
+    let allocator = allocator_guard.as_mut()?;
+
+    // If any requested page is already mapped, require the entire region
+    // to be mapped to the exact physical frames requested.
+    let mut existing_pages = 0u64;
+
+    for i in 0..page_count {
+        let page = Page::<Size4KiB>::containing_address(virtual_start + i * 4096);
+
+        match mapper.translate_page(page) {
+            Ok(frame) => {
+                let expected = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(
+                    physical_page_start + i * 4096,
+                ));
+
+                if frame != expected {
+                    return None;
+                }
+
+                existing_pages += 1;
+            }
+            Err(_) => {
+                if existing_pages != 0 {
+                    return None;
+                }
+            }
+        }
+    }
+
+    if existing_pages == page_count {
+        return Some(MMIO_VIRTUAL_BASE + offset);
+    }
+
+    // Map a fresh region. Do not allow a partially existing region.
+    let flags = PageTableFlags::PRESENT
+        | PageTableFlags::WRITABLE
+        | PageTableFlags::NO_CACHE
+        | PageTableFlags::WRITE_THROUGH;
+
+    let mut mapped_pages = 0u64;
+
+    for i in 0..page_count {
+        let page = Page::<Size4KiB>::containing_address(virtual_start + i * 4096);
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(
+            physical_page_start + i * 4096,
+        ));
+
+        if mapper.map_to(page, frame, flags, allocator).is_err() {
+            for j in (0..mapped_pages).rev() {
+                let rollback_page = Page::<Size4KiB>::containing_address(virtual_start + j * 4096);
+
+                if let Ok((_frame, flush)) = mapper.unmap(rollback_page) {
+                    flush.flush();
+                }
+            }
+
+            return None;
+        }
+
+        mapped_pages += 1;
+    }
+
+    Some(MMIO_VIRTUAL_BASE + offset)
+}
+
+/// Allocate one zeroed, page-aligned physical RAM page for device DMA.
+///
+/// Returns (CPU virtual address, physical address).
+///
+/// The page is intentionally retained: callers must not free it while a
+/// device might still access it through DMA.
+pub fn allocate_dma_page() -> Option<(u64, u64)> {
+    let mut allocator_guard = FRAME_ALLOCATOR.lock();
+    let allocator = allocator_guard.as_mut()?;
+
+    let frame = allocator.allocate_frame()?;
+    let physical_address = frame.start_address().as_u64();
+
+    let physical_offset = *PHYSICAL_MEMORY_OFFSET.lock();
+    let virtual_address = physical_offset.checked_add(physical_address)?;
+
+    // The bootloader's physical-memory mapping must cover this usable RAM
+    // frame. Clear the page before exposing it to a device.
+    unsafe {
+        core::ptr::write_bytes(virtual_address as *mut u8, 0, 4096);
+    }
+
+    Some((virtual_address, physical_address))
 }

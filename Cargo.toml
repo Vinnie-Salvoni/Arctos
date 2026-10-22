@@ -6,9 +6,23 @@ authors = ["Vincenzo Salvoni <vinniesalvoni@gmail.com>"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 description = "A bare-metal x86_64 operating system"
 
+
 [package.metadata.bootimage]
-run-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on", "-rtc", "clock=host"]
-test-args = ["-m", "4096M", "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk", "-rtc", "clock=host"]
+run-args = [
+    "-m", "4096M",
+    "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk",
+    "-netdev", "user,id=net0",
+    "-device", "e1000,netdev=net0",
+    "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on",
+    "-rtc", "clock=host"
+]
+test-args = [
+    "-m", "4096M",
+    "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk",
+    "-netdev", "user,id=net0",
+    "-device", "e1000,netdev=net0",
+    "-rtc", "clock=host"
+]
 
 [dependencies]
 volatile = "0.2.7"

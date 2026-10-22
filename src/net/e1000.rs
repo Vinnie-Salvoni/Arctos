@@ -11,6 +11,18 @@ use crate::{
 
 const REGISTER_MAP_SIZE: usize = 0x6000;
 
+const MDIC: usize = 0x0020;
+
+const MDIC_OP_WRITE: u32 = 1 << 26;
+const MDIC_OP_READ: u32 = 2 << 26;
+const MDIC_PHY_ADDR: u32 = 1 << 21;
+const MDIC_READY: u32 = 1 << 28;
+const MDIC_ERROR: u32 = 1 << 30;
+
+const PHY_BMCR: u8 = 0;
+const PHY_BMCR_LOOPBACK: u16 = 1 << 14;
+const PHY_BMCR_DEFAULT: u16 = 0x1140;
+const MDIC_WAIT_LIMIT: usize = 100_000;
 const CTRL: usize = 0x0000;
 const STATUS: usize = 0x0008;
 const TCTL: usize = 0x0400;
@@ -33,13 +45,18 @@ const RDT: usize = 0x2818;
 
 const RCTL_EN: u32 = 1 << 1;
 const RCTL_BAM: u32 = 1 << 15;
-
+const RCTL_LBM_MAC: u32 = 1 << 6;
 const RX_DESCRIPTOR_COUNT: usize = 64;
 const RX_BUFFER_SIZE: usize = 2048;
 const RX_STATUS_DD: u8 = 1 << 0;
 const RX_STATUS_EOP: u8 = 1 << 1;
 
 const CTRL_RST: u32 = 1 << 26;
+const CTRL_FD: u32 = 1 << 0;
+const CTRL_SLU: u32 = 1 << 6;
+const CTRL_SPEED_MASK: u32 = 0b11 << 8;
+const CTRL_FRCSPD: u32 = 1 << 11;
+const CTRL_FRCDPX: u32 = 1 << 12;
 const STATUS_LU: u32 = 1 << 1;
 
 const TCTL_EN: u32 = 1 << 1;
@@ -56,6 +73,14 @@ const TX_DESCRIPTOR_COUNT: usize = 256;
 const DMA_PAGE_SIZE: usize = 4096;
 const MAX_ETHERNET_FRAME: usize = 1518;
 const TX_WAIT_LIMIT: usize = 5_000_000;
+
+const MPC: usize = 0x4010;
+const RNBC: usize = 0x40A0;
+const GPRC: usize = 0x4074;
+
+const GPTC: usize = 0x4080;
+const TPT: usize = 0x40D4;
+const BPTC: usize = 0x4014;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -118,6 +143,14 @@ impl E1000Driver {
             rx_buffer_virtual: [0; RX_DESCRIPTOR_COUNT],
             rx_head: 0,
         }
+    }
+
+    pub fn phy_debug_status(&self) -> Result<u16, DriverError> {
+        if !self.initialized {
+            return Err(DriverError::NotInitialized);
+        }
+
+        self.read_phy_register(PHY_BMCR)
     }
 
     fn read_reg(&self, offset: usize) -> u32 {
@@ -243,7 +276,8 @@ impl E1000Driver {
                 );
             }
         }
-
+        let first_rx_buffer =
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*ring).address)) };
         self.rx_ring_virtual = Some(ring_virtual);
         self.rx_head = 0;
 
@@ -349,6 +383,192 @@ impl E1000Driver {
         self.tx_tail = next_tail;
         Ok(())
     }
+
+    fn read_phy_register(&self, register: u8) -> Result<u16, DriverError> {
+        let command = MDIC_OP_READ | MDIC_PHY_ADDR | ((register as u32) << 16);
+
+        self.write_reg(MDIC, command);
+
+        for _ in 0..MDIC_WAIT_LIMIT {
+            let result = self.read_reg(MDIC);
+
+            if result & MDIC_READY != 0 {
+                if result & MDIC_ERROR != 0 {
+                    return Err(DriverError::DeviceUnavailable);
+                }
+
+                return Ok(result as u16);
+            }
+
+            core::hint::spin_loop();
+        }
+
+        Err(DriverError::DeviceUnavailable)
+    }
+
+    fn write_phy_register(&self, register: u8, value: u16) -> Result<(), DriverError> {
+        let command = MDIC_OP_WRITE | MDIC_PHY_ADDR | ((register as u32) << 16) | value as u32;
+
+        self.write_reg(MDIC, command);
+
+        for _ in 0..MDIC_WAIT_LIMIT {
+            let result = self.read_reg(MDIC);
+
+            if result & MDIC_READY != 0 {
+                if result & MDIC_ERROR != 0 {
+                    return Err(DriverError::DeviceUnavailable);
+                }
+
+                return Ok(());
+            }
+
+            core::hint::spin_loop();
+        }
+
+        Err(DriverError::DeviceUnavailable)
+    }
+
+    /// Enable MAC loopback for a local transmit/receive test.
+    ///
+    /// This changes the receive configuration only; normal operation can be
+    /// restored by calling `disable_loopback`.
+
+    pub fn enable_loopback(&mut self) -> Result<(), DriverError> {
+        if !self.initialized {
+            return Err(DriverError::NotInitialized);
+        }
+
+        // Stop receive while changing loopback configuration.
+        self.write_reg(RCTL, 0);
+        fence(Ordering::SeqCst);
+
+        // QEMU's E1000 model loops transmitted packets back through
+        // its receive path when the PHY BMCR loopback bit is set.
+        self.write_phy_register(PHY_BMCR, PHY_BMCR_DEFAULT | PHY_BMCR_LOOPBACK)?;
+
+        // Accept broadcast frames and enable receive.
+        const RCTL_UPE: u32 = 1 << 3;
+
+        self.write_reg(RCTL, RCTL_EN | RCTL_BAM | RCTL_UPE | RCTL_LBM_MAC);
+        fence(Ordering::SeqCst);
+
+        crate::println!("[NET] CTRL={:#010X}", self.read_reg(CTRL));
+        crate::println!(
+            "[NET] STATUS={:#010X} (link-up bit: {})",
+            self.read_reg(STATUS),
+            if self.read_reg(STATUS) & STATUS_LU != 0 {
+                "SET"
+            } else {
+                "CLEAR"
+            }
+        );
+        crate::println!(
+            "[NET] PHY BMCR={:#06X}, RCTL={:#010X}",
+            self.read_phy_register(PHY_BMCR)?,
+            self.read_reg(RCTL)
+        );
+
+        Ok(())
+    }
+
+    /// Capture RX registers and every descriptor status without consuming frames.
+
+    pub fn rx_debug_snapshot(
+        &self,
+    ) -> Result<([u8; RX_DESCRIPTOR_COUNT], u32, u32, u32, u32, u32, u32, u64), DriverError> {
+        if !self.initialized {
+            return Err(DriverError::NotInitialized);
+        }
+
+        let ring_virtual = self.rx_ring_virtual.ok_or(DriverError::NotInitialized)?;
+
+        fence(Ordering::SeqCst);
+
+        let mut statuses = [0u8; RX_DESCRIPTOR_COUNT];
+        let ring = ring_virtual as *const RxDescriptor;
+
+        for (index, status) in statuses.iter_mut().enumerate() {
+            let descriptor = unsafe { ring.add(index) };
+            *status = unsafe { read_volatile(core::ptr::addr_of!((*descriptor).status)) };
+        }
+
+        let first_rx_buffer = unsafe { read_volatile(core::ptr::addr_of!((*ring).address)) };
+
+        let rctl = self.read_reg(RCTL);
+        let rdh = self.read_reg(RDH);
+        let rdt = self.read_reg(RDT);
+        let rdlen = self.read_reg(RDLEN);
+        let rdbal = self.read_reg(RDBAL);
+        let rdbah = self.read_reg(RDBAH);
+        crate::println!(
+            "[NET] TX counters: GPTC={} TPT={} BPTC={}",
+            self.read_reg(GPTC),
+            self.read_reg(TPT),
+            self.read_reg(BPTC)
+        );
+        crate::println!(
+            "[NET] RX counters: MPC={} RNBC={} GPRC={}",
+            self.read_reg(MPC),
+            self.read_reg(RNBC),
+            self.read_reg(GPRC)
+        );
+        Ok((
+            statuses,
+            rctl,
+            rdh,
+            rdt,
+            rdlen,
+            rdbal,
+            rdbah,
+            first_rx_buffer,
+        ))
+    }
+
+    pub fn tx_debug_snapshot(&self) -> Result<(u32, u32, u32, u32, u8), DriverError> {
+        if !self.initialized {
+            return Err(DriverError::NotInitialized);
+        }
+
+        let ring_virtual = self.tx_ring_virtual.ok_or(DriverError::NotInitialized)?;
+
+        let descriptor_index = if self.tx_tail == 0 {
+            TX_DESCRIPTOR_COUNT - 1
+        } else {
+            self.tx_tail - 1
+        };
+
+        let descriptor = unsafe { (ring_virtual as *const TxDescriptor).add(descriptor_index) };
+
+        fence(Ordering::SeqCst);
+
+        let status = unsafe { read_volatile(core::ptr::addr_of!((*descriptor).status)) };
+
+        Ok((
+            self.read_reg(TDH),
+            self.read_reg(TDT),
+            self.read_reg(TDLEN),
+            self.read_reg(TCTL),
+            status,
+        ))
+    }
+
+    /// Restore normal receive mode after a loopback test.
+
+    pub fn disable_loopback(&mut self) -> Result<(), DriverError> {
+        if !self.initialized {
+            return Err(DriverError::NotInitialized);
+        }
+
+        self.write_reg(RCTL, 0);
+        fence(Ordering::SeqCst);
+
+        self.write_phy_register(PHY_BMCR, PHY_BMCR_DEFAULT)?;
+
+        self.write_reg(RCTL, RCTL_EN | RCTL_BAM);
+        fence(Ordering::SeqCst);
+
+        Ok(())
+    }
 }
 
 impl NetworkDriver for E1000Driver {
@@ -391,7 +611,16 @@ impl NetworkDriver for E1000Driver {
         if !reset_complete {
             return Err(DriverError::DeviceUnavailable);
         }
+        // Request link-up and full-duplex operation after reset.
+        let control = self.read_reg(CTRL);
+        self.write_reg(CTRL, control | CTRL_SLU | CTRL_FD);
+        fence(Ordering::SeqCst);
 
+        crate::println!(
+            "[NET] CTRL={:#010X}, STATUS={:#010X}",
+            self.read_reg(CTRL),
+            self.read_reg(STATUS)
+        );
         self.mac_address = self
             .read_mac_from_registers()
             .ok_or(DriverError::DeviceUnavailable)?;

@@ -20,7 +20,7 @@ static FORMAT_CONFIRMATION: Mutex<bool> = Mutex::new(false);
 const COMMANDS: &[&str] = &[
     "help", "nethelp", "info", "clear", "echo", "print", "alloc", "free", "ls", "dir", "cat",
     "format", "confirm", "cancel", "reboot", "restart", "shutdown", "poweroff", "pci", "netinfo",
-    "nettest", "netrx",
+    "nettest", "netrx", "netloop",
 ];
 
 // ---------------------------------------------------------------------------
@@ -140,6 +140,7 @@ fn print_help() {
     crate::println!("cancel            Cancel pending formatting");
     crate::println!("reboot / restart  Restart the machine");
     crate::println!("shutdown          Request machine shutdown");
+    crate::println!("netloop           Test E1000 transmission and reception in a loop");
 }
 
 fn print_nethelp() {
@@ -152,6 +153,7 @@ fn print_nethelp() {
     crate::println!("Network tests");
     crate::println!("  nettest         Test E1000 transmission");
     crate::println!("  netrx           Poll for received Ethernet frames");
+    crate::println!("  netloop         Test local Ethernet loopback");
     crate::println!("");
     crate::println!("Note: nettest verifies TX descriptor completion.");
     crate::println!("It does not prove that a remote device received the frame.");
@@ -661,7 +663,163 @@ fn execute_command(cmd: &str) {
                 "[NET] RX is polling-only; incoming traffic must be generated to test it."
             );
         }
+        "netloop" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: netloop");
+                return;
+            }
 
+            crate::println!("[NET] Searching for Intel E1000...");
+            let devices = crate::pci::scan();
+
+            let device = match devices
+                .iter()
+                .find(|d| d.vendor_id == 0x8086 && d.device_id == 0x100E)
+            {
+                Some(device) => *device,
+                None => {
+                    crate::println!("[error] Intel E1000 (8086:100E) not found.");
+                    return;
+                }
+            };
+
+            let bar0 = match crate::pci::read_bar(&device, 0) {
+                Some(crate::pci::PciBar::Memory32 { address, .. }) => address as u64,
+                Some(crate::pci::PciBar::Memory64 { address, .. }) => address,
+                _ => {
+                    crate::println!("[error] Invalid E1000 BAR0.");
+                    return;
+                }
+            };
+
+            let mut driver = crate::net::e1000::E1000Driver::new(device, bar0);
+
+            if let Err(error) = crate::net::driver::NetworkDriver::init(&mut driver) {
+                crate::println!("[error] E1000 initialisation failed: {:?}", error);
+                return;
+            }
+
+            if let Err(error) = driver.enable_loopback() {
+                crate::println!("[error] Could not enable loopback: {:?}", error);
+                return;
+            }
+
+            match driver.phy_debug_status() {
+                Ok(bmcr) => {
+                    crate::println!("[NET] PHY BMCR: {:#06X}", bmcr);
+                    crate::println!(
+                        "[NET] PHY loopback bit: {}",
+                        if bmcr & (1 << 14) != 0 {
+                            "SET"
+                        } else {
+                            "CLEAR"
+                        }
+                    );
+                }
+                Err(error) => {
+                    crate::println!("[NET] PHY status read failed: {:?}", error);
+                }
+            }
+            let info = crate::net::driver::NetworkDriver::info(&driver);
+
+            let mut sent = [0u8; 60];
+
+            // Broadcast destination: FF:FF:FF:FF:FF:FF
+            sent[..6].fill(0xFF);
+
+            // Keep the adapter's MAC address as the source.
+            sent[6..12].copy_from_slice(&info.mac_address);
+
+            sent[12..14].copy_from_slice(&0x88B5u16.to_be_bytes());
+
+            let payload = b"ARCTOS E1000 LOOPBACK TEST";
+            sent[14..14 + payload.len()].copy_from_slice(payload);
+
+            crate::println!("[NET] MAC loopback enabled.");
+            crate::println!("[NET] Transmitting test frame...");
+
+            if let Err(error) = crate::net::driver::NetworkDriver::transmit(&mut driver, &sent) {
+                let _ = driver.disable_loopback();
+                crate::println!("[error] TX failed: {:?}", error);
+                return;
+            }
+            match driver.tx_debug_snapshot() {
+                Ok((tdh, tdt, tdlen, tctl, status)) => {
+                    crate::println!(
+                        "[NET] TX after send: TDH={} TDT={} TDLEN={} TCTL={:#010X}",
+                        tdh,
+                        tdt,
+                        tdlen,
+                        tctl
+                    );
+                    crate::println!("[NET] Last TX descriptor status: {:#04X}", status);
+                }
+                Err(error) => {
+                    crate::println!("[NET] TX diagnostic failed: {:?}", error);
+                }
+            }
+            let mut received = [0u8; 2048];
+
+            for _ in 0..5_000_000usize {
+                match crate::net::driver::NetworkDriver::receive(&mut driver, &mut received) {
+                    Ok(Some(length)) => {
+                        let _ = driver.disable_loopback();
+
+                        if length == sent.len() && received[..length] == sent[..] {
+                            crate::println!("[NET] LOOPBACK SUCCESS.");
+                            crate::println!(
+                                "[NET] Received frame exactly matches transmitted frame ({} bytes).",
+                                length
+                            );
+                        } else {
+                            crate::println!(
+                                "[NET] Received a frame, but it did not match the test frame ({} bytes).",
+                                length
+                            );
+                        }
+
+                        return;
+                    }
+                    Ok(None) => core::hint::spin_loop(),
+                    Err(error) => {
+                        let _ = driver.disable_loopback();
+                        crate::println!("[error] RX failed: {:?}", error);
+                        return;
+                    }
+                }
+            }
+
+            match driver.rx_debug_snapshot() {
+                Ok((statuses, rctl, rdh, rdt, rdlen, rdbal, rdbah, first_rx_buffer)) => {
+                    crate::println!("[NET] No loopback frame received.");
+                    crate::println!("[NET] RCTL: {:#010X}", rctl);
+                    crate::println!("[NET] RDH: {}  RDT: {}", rdh, rdt);
+                    crate::println!("[NET] RDLEN: {}", rdlen);
+                    crate::println!("[NET] RDBAL: {:#010X}", rdbal);
+                    crate::println!("[NET] RDBAH: {:#010X}", rdbah);
+                    crate::println!("[NET] RXD[0] buffer physical: {:#018X}", first_rx_buffer);
+                    let mut completed = 0usize;
+
+                    for (index, status) in statuses.iter().enumerate() {
+                        if status & 1 != 0 {
+                            completed += 1;
+                            crate::println!("[NET] RXD[{}]: status={:#04X}", index, status);
+                        }
+                    }
+
+                    crate::println!(
+                        "[NET] Descriptors marked complete: {} / {}",
+                        completed,
+                        statuses.len()
+                    );
+                }
+                Err(error) => {
+                    crate::println!("[NET] RX diagnostic failed: {:?}", error);
+                }
+            }
+
+            let _ = driver.disable_loopback();
+        }
         "format" => {
             if !args.is_empty() {
                 crate::println!("[error] Usage: format");

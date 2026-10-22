@@ -6,6 +6,7 @@
 // It maps the Level 4 Page Table and manages physical frame allocations.
 // =============================================================================
 
+use x86_64::structures::paging::mapper::TranslateResult;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::{structures::paging::PageTable, PhysAddr, VirtAddr};
 
@@ -116,4 +117,30 @@ pub unsafe fn init(physical_memory_offset: VirtAddr) -> OffsetPageTable<'static>
 
     // 2. Initialize and return the OffsetPageTable wrapper
     OffsetPageTable::new(level_4_table, physical_memory_offset)
+}
+
+/// Translate a virtual address to its physical address using the
+/// bootloader's identity-offset physical-memory mapping.
+///
+/// Returns `None` if the virtual address is not mapped.
+///
+/// # Safety
+/// The caller must ensure `virtual_address` is a valid address in the
+/// active address space and that the physical-memory offset is correct.
+pub unsafe fn virtual_to_physical(
+    virtual_address: VirtAddr,
+    physical_memory_offset: VirtAddr,
+) -> Option<PhysAddr> {
+    use x86_64::structures::paging::Translate;
+
+    let level_4_table = active_level_4_table(physical_memory_offset);
+    let offset_page_table = OffsetPageTable::new(level_4_table, physical_memory_offset);
+
+    match offset_page_table.translate(virtual_address) {
+        TranslateResult::Mapped { frame, offset, .. } => {
+            Some(frame.start_address() + u64::try_from(offset).ok()?)
+        }
+        TranslateResult::NotMapped => None,
+        TranslateResult::InvalidFrameAddress(_) => None,
+    }
 }

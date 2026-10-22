@@ -29,6 +29,8 @@ mod interrupts;
 mod memory;
 mod memory_mapper;
 pub mod mouse;
+mod net;
+mod pci;
 pub mod pit;
 pub mod serial;
 mod shell;
