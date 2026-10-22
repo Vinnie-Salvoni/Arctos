@@ -49,59 +49,14 @@ use x86_64::VirtAddr;
 entry_point!(kernel_main);
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
-    // 1. Clear the screen to a clean slate
-    {
-        let mut writer = vga_buffer::WRITER.lock();
-        writer.clear_screen();
-    }
-
-    //call pit_init for timing accurately
-    pit::init_pit();
-
-    // 2. Initialize Core CPU Subsystems (Quietly first)
-    gdt::init();
-    interrupts::init_idt();
-    unsafe {
-        interrupts::PICS.lock().initialize();
-    }
-    mouse::init_mouse();
-    serial::init();
-
-    // Keep interrupts disabled until memory and global services are ready.
-
-    // 3. Initialize Virtual Memory & Heap Allocator
-
-    // 3. Initialize Virtual Memory & Heap Allocator
-    let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
-    let mut mapper = unsafe { memory::init(phys_mem_offset) };
-    let mut frame_allocator =
-        unsafe { memory::BootInfoFrameAllocator::init(&boot_info.memory_map) };
-    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
-
-    // Initialize the global memory mapper for kernel memory operations.
-    memory_mapper::init(mapper, frame_allocator, boot_info.physical_memory_offset);
-
-    // All core memory services are initialized; hardware interrupts can now run.
-    x86_64::instructions::interrupts::enable();
-
-    // 4. Record completed initialization and display the splash screen.
-    // The heap is ready, so the boot log can safely allocate memory.
-    bootlog::record("PIT timer initialized.");
-    bootlog::record("GDT and TSS initialized.");
-    bootlog::record("Interrupt descriptor table initialized.");
-    bootlog::record("Programmable interrupt controllers initialized.");
-    bootlog::record("PS/2 mouse initialization attempted.");
-    bootlog::record("Serial output initialized.");
-    bootlog::record("Virtual memory initialized.");
-    bootlog::record("Kernel heap allocator initialized.");
-    bootlog::record("Global memory mapper initialized.");
-    bootlog::record("Hardware interrupts enabled.");
-
+    // 1. Prepare the display and show the splash immediately.
     {
         let mut writer = vga_buffer::WRITER.lock();
         writer.clear_screen();
         writer.set_color(vga_buffer::Color::LightCyan, vga_buffer::Color::Black);
     }
+
+    bootlog::record("Kernel entry reached.");
 
     println!();
     println!();
@@ -117,30 +72,85 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         writer.set_color(vga_buffer::Color::LightGreen, vga_buffer::Color::Black);
     }
 
-    println!("  ARCTOS OS  v{}", env!("CARGO_PKG_VERSION"));
-    println!("  x86_64  |  Rust kernel");
+    println!("  ARCTOS OS v{}", env!("CARGO_PKG_VERSION"));
+    println!("  x86_64 | Rust kernel");
     println!("  -----------------------------------------------");
-    println!("  [OK] Core initialization complete");
+    println!("  Initializing kernel...");
 
-    #[cfg(feature = "verbose-boot")]
-    {
-        println!();
-        println!("  VERBOSE BOOT");
-        println!("  [OK] PIT timer initialized");
-        println!("  [OK] GDT and TSS initialized");
-        println!("  [OK] Interrupt descriptor table initialized");
-        println!("  [OK] Interrupt controllers initialized");
-        println!("  [OK] Mouse initialization attempted");
-        println!("  [OK] Serial output initialized");
-        println!("  [OK] Virtual memory initialized");
-        println!("  [OK] Kernel heap initialized");
-        println!("  [OK] Global memory mapper initialized");
-        println!("  [OK] Hardware interrupts enabled");
+    // Each operation runs first; its message appears immediately afterwards.
+    // Default builds record events silently. Verbose builds display them.
+    macro_rules! boot_step {
+        ($message:literal, $operation:expr) => {{
+            $operation;
+            bootlog::record($message);
+
+            #[cfg(feature = "verbose-boot")]
+            println!("  [OK] {}", $message);
+        }};
     }
 
+    // 2. Core CPU and device initialization.
+    boot_step!("PIT timer initialized.", pit::init_pit());
+    boot_step!("GDT and TSS initialized.", gdt::init());
+    boot_step!(
+        "Interrupt descriptor table initialized.",
+        interrupts::init_idt()
+    );
+
+    boot_step!("Programmable interrupt controllers initialized.", unsafe {
+        interrupts::PICS.lock().initialize();
+    });
+
+    boot_step!("PS/2 mouse initialization attempted.", mouse::init_mouse());
+
+    boot_step!("Serial output initialized.", serial::init());
+
+    // 3. Initialize virtual memory and physical frame allocation.
+    let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
+    let mut mapper = unsafe { memory::init(phys_mem_offset) };
+    bootlog::record("Virtual memory initialized.");
+
+    #[cfg(feature = "verbose-boot")]
+    println!("  [OK] Virtual memory initialized.");
+
+    let mut frame_allocator =
+        unsafe { memory::BootInfoFrameAllocator::init(&boot_info.memory_map) };
+
+    bootlog::record("Physical frame allocator initialized.");
+
+    #[cfg(feature = "verbose-boot")]
+    println!("  [OK] Physical frame allocator initialized.");
+
+    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("heap initialization failed");
+
+    bootlog::record("Kernel heap allocator initialized.");
+
+    #[cfg(feature = "verbose-boot")]
+    println!("  [OK] Kernel heap allocator initialized.");
+
+    memory_mapper::init(mapper, frame_allocator, boot_info.physical_memory_offset);
+
+    bootlog::record("Global memory mapper initialized.");
+
+    #[cfg(feature = "verbose-boot")]
+    println!("  [OK] Global memory mapper initialized.");
+
+    // Enable hardware interrupts only after core services are ready.
+    x86_64::instructions::interrupts::enable();
+
+    bootlog::record("Hardware interrupts enabled.");
+
+    #[cfg(feature = "verbose-boot")]
+    println!("  [OK] Hardware interrupts enabled.");
+
+    // 4. Print the final startup summary.
     let (heap_used, heap_free) = allocator::heap_stats();
 
     println!();
+    println!("  -----------------------------------------------");
+    println!("  CORE INITIALIZATION COMPLETE");
+
     println!(
         "  Heap: {} MiB total | {} bytes used",
         (heap_used + heap_free) / (1024 * 1024),
@@ -160,7 +170,10 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         }
     }
 
-    println!("  Starting kernel self-tests...");
+    println!("  Running kernel self-tests...");
+    println!();
+
+    bootlog::record("Core initialization completed.");
 
     // 6. Test Heap Allocations & Verify Memory Integrity
     {

@@ -1,35 +1,41 @@
-use alloc::string::String;
-use alloc::vec::Vec;
 use spin::Mutex;
 
-/// A small persistent record of kernel startup events.
-static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+const MAX_EVENTS: usize = 64;
 
-/// Record a startup event for later inspection.
-pub fn record(message: &str) {
-    let mut events = EVENTS.lock();
+struct BootLog {
+    events: [&'static str; MAX_EVENTS],
+    len: usize,
+}
 
-    // Keep the log bounded so it cannot grow indefinitely.
-    if events.len() >= 64 {
-        events.remove(0);
+static EVENTS: Mutex<BootLog> = Mutex::new(BootLog {
+    events: [""; MAX_EVENTS],
+    len: 0,
+});
+
+/// Record an event without allocating heap memory.
+pub fn record(message: &'static str) {
+    let mut log = EVENTS.lock();
+
+    if log.len < MAX_EVENTS {
+        let index = log.len;
+        log.events[index] = message;
+        log.len += 1;
     }
-
-    events.push(String::from(message));
 }
 
 /// Print the recorded startup events.
 pub fn print() {
-    let events = EVENTS.lock();
+    let log = EVENTS.lock();
 
     crate::println!("--- Arctos Boot Log ---");
 
-    if events.is_empty() {
+    if log.len == 0 {
         crate::println!("No boot events recorded.");
         return;
     }
 
-    for (index, event) in events.iter().enumerate() {
-        crate::println!("{:02}. {}", index + 1, event);
+    for index in 0..log.len {
+        crate::println!("{:02}. {}", index + 1, log.events[index]);
     }
 
     crate::println!("--- End of Boot Log ---");
