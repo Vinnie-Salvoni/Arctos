@@ -10,7 +10,7 @@ use crate::{
 };
 
 const REGISTER_MAP_SIZE: usize = 0x6000;
-
+const RXO: usize = 0x400C;
 const MDIC: usize = 0x0020;
 
 const MDIC_OP_WRITE: u32 = 1 << 26;
@@ -80,7 +80,7 @@ const GPRC: usize = 0x4074;
 
 const GPTC: usize = 0x4080;
 const TPT: usize = 0x40D4;
-const BPTC: usize = 0x4014;
+const BPTC: usize = 0x40F4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -293,10 +293,20 @@ impl E1000Driver {
         self.write_reg(RDH, 0);
         self.write_reg(RDT, (RX_DESCRIPTOR_COUNT - 1) as u32);
 
-        // Enable receive and accept broadcast frames.
-        // The default receive-buffer size is 2048 bytes.
+        // Enable receive with an explicit 2048-byte buffer size.
+        // BSIZE=00 selects 2048 bytes; BSEX remains clear.
+        // Also accept broadcast frames.
+        const RCTL_BSIZE_MASK: u32 = 0b11 << 16;
+        const RCTL_BSEX: u32 = 1 << 25;
+
+        let receive_control = RCTL_EN | RCTL_BAM;
+
+        // Make the buffer-size configuration explicit rather than relying
+        // on any previous receive-control register state.
+        let receive_control = receive_control & !(RCTL_BSIZE_MASK | RCTL_BSEX);
+
         fence(Ordering::SeqCst);
-        self.write_reg(RCTL, RCTL_EN | RCTL_BAM);
+        self.write_reg(RCTL, receive_control);
         fence(Ordering::SeqCst);
 
         Ok(())
@@ -337,7 +347,33 @@ impl E1000Driver {
         // Copy the frame into DMA-accessible RAM.
         unsafe {
             copy_nonoverlapping(frame.as_ptr(), buffer_virtual as *mut u8, frame.len());
+            let tx_bytes = buffer_virtual as *const u8;
 
+            crate::println!(
+                "[NET] DMA TX destination: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                read_volatile(tx_bytes.add(0)),
+                read_volatile(tx_bytes.add(1)),
+                read_volatile(tx_bytes.add(2)),
+                read_volatile(tx_bytes.add(3)),
+                read_volatile(tx_bytes.add(4)),
+                read_volatile(tx_bytes.add(5)),
+            );
+
+            crate::println!(
+                "[NET] DMA TX source: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+                read_volatile(tx_bytes.add(6)),
+                read_volatile(tx_bytes.add(7)),
+                read_volatile(tx_bytes.add(8)),
+                read_volatile(tx_bytes.add(9)),
+                read_volatile(tx_bytes.add(10)),
+                read_volatile(tx_bytes.add(11)),
+            );
+
+            crate::println!(
+                "[NET] DMA TX EtherType: {:02X}:{:02X}",
+                read_volatile(tx_bytes.add(12)),
+                read_volatile(tx_bytes.add(13)),
+            );
             write_volatile(
                 core::ptr::addr_of_mut!((*descriptor).address),
                 self.tx_buffer_physical,
@@ -449,7 +485,7 @@ impl E1000Driver {
         // Accept broadcast frames and enable receive.
         const RCTL_UPE: u32 = 1 << 3;
 
-        self.write_reg(RCTL, RCTL_EN | RCTL_BAM | RCTL_UPE | RCTL_LBM_MAC);
+        self.write_reg(RCTL, RCTL_EN | RCTL_BAM | RCTL_UPE);
         fence(Ordering::SeqCst);
 
         crate::println!("[NET] CTRL={:#010X}", self.read_reg(CTRL));
@@ -512,6 +548,7 @@ impl E1000Driver {
             self.read_reg(RNBC),
             self.read_reg(GPRC)
         );
+        crate::println!("[NET] RX overflow: RXO={}", self.read_reg(RXO));
         Ok((
             statuses,
             rctl,
