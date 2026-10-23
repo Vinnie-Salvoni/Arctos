@@ -280,29 +280,62 @@ pub fn clear_screen(color: u8) {
     }
 }
 
-pub fn draw_char(x: usize, y: usize, c: char, color: u8) {
+/// Draw a character at a configurable integer scale.
+///
+/// Scale 1 = 8x16 pixels, scale 2 = 16x32 pixels,
+/// scale 3 = 24x48 pixels, and so on.
+pub fn draw_char_scaled(x: usize, y: usize, c: char, color: u8, scale: usize) {
+    if scale == 0 {
+        return;
+    }
+
     let font_guard = SAVED_FONT.lock();
     let char_code = c as usize;
-    if char_code < 256 {
-        let offset = char_code * 32;
-        for row in 0..16 {
-            let row_byte = font_guard[offset + row];
-            for col in 0..8 {
-                let bit = (row_byte >> (7 - col)) & 1;
-                if bit != 0 {
-                    write_pixel(x + col, y + row, color);
+
+    if char_code >= 256 {
+        return;
+    }
+
+    let offset = char_code * 32;
+
+    for row in 0..16 {
+        let row_byte = font_guard[offset + row];
+
+        for col in 0..8 {
+            let bit = (row_byte >> (7 - col)) & 1;
+
+            if bit != 0 {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        write_pixel(x + col * scale + dx, y + row * scale + dy, color);
+                    }
                 }
             }
         }
     }
 }
 
-pub fn draw_string(x: usize, y: usize, text: &str, color: u8) {
-    let mut cur_x = x;
-    for c in text.chars() {
-        draw_char(cur_x, y, c, color);
-        cur_x += 8;
+/// Draw a string using a configurable integer font scale.
+pub fn draw_string_scaled(x: usize, y: usize, text: &str, color: u8, scale: usize) {
+    if scale == 0 {
+        return;
     }
+
+    let mut cur_x = x;
+
+    for c in text.chars() {
+        draw_char_scaled(cur_x, y, c, color, scale);
+        cur_x += 8 * scale;
+    }
+}
+
+/// Preserve the existing API at the original 8x16 size.
+pub fn draw_char(x: usize, y: usize, c: char, color: u8) {
+    draw_char_scaled(x, y, c, color, 1);
+}
+
+pub fn draw_string(x: usize, y: usize, text: &str, color: u8) {
+    draw_string_scaled(x, y, text, color, 1);
 }
 
 pub fn draw_rect(x: usize, y: usize, w: usize, h: usize, color: u8) {

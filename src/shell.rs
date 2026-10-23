@@ -20,7 +20,7 @@ static FORMAT_CONFIRMATION: Mutex<bool> = Mutex::new(false);
 const COMMANDS: &[&str] = &[
     "help", "nethelp", "info", "clear", "echo", "print", "alloc", "free", "ls", "dir", "cat",
     "format", "confirm", "cancel", "reboot", "restart", "shutdown", "poweroff", "pci", "netinfo",
-    "nettest", "netrx", "netloop", "sysmon", "bootlog",
+    "nettest", "netrx", "netloop", "sysmon", "bootlog", "hwinfo",
 ];
 
 // ---------------------------------------------------------------------------
@@ -136,12 +136,11 @@ fn print_help() {
     crate::println!("ls / dir          List stored files");
     crate::println!("cat <filename>    Read a stored file");
     crate::println!("format            Request filesystem formatting");
-    crate::println!("confirm           Confirm pending formatting");
-    crate::println!("cancel            Cancel pending formatting");
     crate::println!("reboot / restart  Restart the machine");
     crate::println!("shutdown          Request machine shutdown");
     crate::println!("sysmon            Show system monitoring information");
     crate::println!("bootlog           Show recorded startup events");
+    crate::println!("hwinfo            Show detected hardware devices");
 }
 
 /// Display live Arctos system statistics.
@@ -399,7 +398,51 @@ fn execute_command(cmd: &str) {
                 None => crate::println!("[error] File '{}' not found.", args),
             }
         }
+        "hwinfo" => {
+            if !args.is_empty() {
+                crate::println!("[error] Usage: hwinfo");
+                return;
+            }
 
+            crate::println!("========================================");
+            crate::println!("         ARCTOS HARDWARE INFO");
+            crate::println!("========================================");
+            crate::println!("Architecture: x86_64");
+            crate::println!("");
+
+            let devices = crate::pci::scan();
+
+            if devices.is_empty() {
+                crate::println!("No PCI devices detected.");
+            } else {
+                crate::println!("Detected PCI devices: {}", devices.len());
+                crate::println!("");
+
+                for device in devices.iter() {
+                    crate::println!(
+                        "PCI {:02X}:{:02X}.{}",
+                        device.bus,
+                        device.device,
+                        device.function
+                    );
+                    crate::println!("  Vendor ID: 0x{:04X}", device.vendor_id);
+                    crate::println!("  Device ID: 0x{:04X}", device.device_id);
+                    crate::println!(
+                        "  Class: 0x{:02X}, subclass: 0x{:02X}",
+                        device.class_code,
+                        device.subclass
+                    );
+
+                    if device.class_code == 0x02 {
+                        crate::println!("  Type: Network controller");
+                    }
+
+                    crate::println!("");
+                }
+            }
+
+            crate::println!("Hardware scan complete.");
+        }
         "pci" => {
             if !args.is_empty() {
                 crate::println!("[error] Usage: pci");
