@@ -35,11 +35,8 @@ pic8259 = "0.10.4"
 pc-keyboard = "0.7.0"
 linked_list_allocator = "0.9.0"
 
-# Enables map_physical_memory so the bootloader maps all physical RAM into
-# virtual address space and exposes physical_memory_offset inside BootInfo.
-[dependencies.bootloader]
-version = "0.9.27"
-features = ["map_physical_memory"]
+# Bootloader API for the newest bootloader (v0.11) with framebuffer & dynamic physical memory mapping
+bootloader_api = "0.11.17"
 
 [dependencies.lazy_static]
 version = "1.5.0"

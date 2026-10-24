@@ -34,38 +34,38 @@ pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static
     &mut *page_table_ptr // unsafe dereference
 }
 
-use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
+use bootloader_api::info::{MemoryRegionKind, MemoryRegions};
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB};
 
-/// A FrameAllocator that returns usable frames from the bootloader's memory map.
+/// A FrameAllocator that returns usable frames from the bootloader's memory regions.
 pub struct BootInfoFrameAllocator {
-    memory_map: &'static MemoryMap,
+    memory_regions: &'static MemoryRegions,
     next: usize,
 }
 
 impl BootInfoFrameAllocator {
-    /// Create a FrameAllocator from the passed memory map.
+    /// Create a FrameAllocator from the passed memory regions.
     ///
     /// # Safety
     /// The caller must guarantee that all frames marked as `Usable` in the
-    /// memory map are actually unused.
-    pub unsafe fn init(memory_map: &'static MemoryMap) -> Self {
+    /// memory regions are actually unused.
+    pub unsafe fn init(memory_regions: &'static MemoryRegions) -> Self {
         BootInfoFrameAllocator {
-            memory_map,
+            memory_regions,
             next: 0, // Keeps track of how many frames we've allocated
         }
     }
 
-    /// Returns an iterator over the usable frames described in the memory map.
+    /// Returns an iterator over the usable frames described in the memory regions.
     fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
-        // 1. Get an iterator over all memory regions in the map
-        let regions = self.memory_map.iter();
+        // 1. Get an iterator over all memory regions
+        let regions = self.memory_regions.iter();
 
-        // 2. Filter out the regions that are NOT usable (e.g. BIOS regions)
-        let usable_regions = regions.filter(|r| r.region_type == MemoryRegionType::Usable);
+        // 2. Filter out the regions that are NOT usable (e.g. bootloader or ACPI regions)
+        let usable_regions = regions.filter(|r| r.kind == MemoryRegionKind::Usable);
 
         // 3. Convert the memory regions into start/end address ranges
-        let addr_ranges = usable_regions.map(|r| r.range.start_addr()..r.range.end_addr());
+        let addr_ranges = usable_regions.map(|r| r.start..r.end);
 
         // 4. Split the address ranges into 4096-byte (4KB) steps (the size of a frame)
         let frame_addresses = addr_ranges.flat_map(|r| r.step_by(4096));
@@ -74,21 +74,21 @@ impl BootInfoFrameAllocator {
         frame_addresses.map(|addr| PhysFrame::containing_address(PhysAddr::new(addr)))
     }
 
-    /// Calculates total physical memory size in bytes from the memory map.
+    /// Calculates total physical memory size in bytes from the memory regions.
     pub fn total_memory_bytes(&self) -> u64 {
         let mut total = 0;
-        for region in self.memory_map.iter() {
-            total += region.range.end_addr() - region.range.start_addr();
+        for region in self.memory_regions.iter() {
+            total += region.end - region.start;
         }
         total
     }
 
-    /// Calculates total usable physical memory size in bytes from the memory map.
+    /// Calculates total usable physical memory size in bytes from the memory regions.
     pub fn usable_memory_bytes(&self) -> u64 {
         let mut total = 0;
-        for region in self.memory_map.iter() {
-            if region.region_type == MemoryRegionType::Usable {
-                total += region.range.end_addr() - region.range.start_addr();
+        for region in self.memory_regions.iter() {
+            if region.kind == MemoryRegionKind::Usable {
+                total += region.end - region.start;
             }
         }
         total
