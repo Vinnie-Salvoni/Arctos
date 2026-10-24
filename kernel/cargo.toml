@@ -1,0 +1,27 @@
+
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+verbose-boot = []
+
+[dependencies]
+volatile = "0.2.7"
+spin = "0.5.2"
+x86_64 = { version = "0.14.10", default-features = false, features = ["instructions", "inline_asm", "abi_x86_interrupt"] }
+pic8259 = "0.10.4"
+pc-keyboard = "0.7.0"
+linked_list_allocator = "0.9.0"
+bootloader_api = "0.11.17"
+
+[dependencies.lazy_static]
+version = "1.5.0"
+features = ["spin_no_std"]
+
+[profile.dev]
+opt-level = 3
+overflow-checks = false
+debug-assertions = false

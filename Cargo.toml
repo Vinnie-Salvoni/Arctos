@@ -1,3 +1,4 @@
+
 [package]
 name = "arctos_os"
 version = "0.1.11"
@@ -6,46 +7,12 @@ authors = ["Vincenzo Salvoni <vinniesalvoni@gmail.com>"]
 license = "LicenseRef-PolyForm-Noncommercial-1.0.0"
 description = "A bare-metal x86_64 operating system"
 
-[features]
-default = []
-verbose-boot = []
-
-[package.metadata.bootimage]
-run-args = [
-    "-m", "4096M",
-    "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk",
-    "-netdev", "user,id=net0",
-    "-device", "e1000,netdev=net0",
-    "-serial", "tcp:127.0.0.1:4444,server=on,wait=off,nodelay=on",
-    "-rtc", "clock=host"
-]
-test-args = [
-    "-m", "4096M",
-    "-drive", "file=target/test_disk.bin,format=raw,index=1,media=disk",
-    "-netdev", "user,id=net0",
-    "-device", "e1000,netdev=net0",
-    "-rtc", "clock=host"
-]
+[workspace]
+resolver = "2"
+members = ["kernel"]
 
 [dependencies]
-volatile = "0.2.7"
-spin = "0.5.2"
-x86_64 = { version = "0.14.10", default-features = false, features = ["instructions", "inline_asm", "abi_x86_interrupt"] }
-pic8259 = "0.10.4"
-pc-keyboard = "0.7.0"
-linked_list_allocator = "0.9.0"
 
-# Bootloader API for the newest bootloader (v0.11) with framebuffer & dynamic physical memory mapping
-bootloader_api = "0.11.17"
-
-[dependencies.lazy_static]
-version = "1.5.0"
-features = ["spin_no_std"]
-
-[profile.dev]
-opt-level = 3
-overflow-checks = false
-debug-assertions = false
-
-[workspace]
-members = []
+[build-dependencies]
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+bootloader = "0.11.17"
